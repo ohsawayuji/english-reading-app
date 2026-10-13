@@ -28,12 +28,12 @@ def get_available_candidate_models():
         models_list = list(client.models.list())
         available_names = [m.name.replace("models/", "") for m in models_list]
         
-        # 優先したいモデル順
+        # 1.5-flashの後継である「flash-lite」を最優先に指定
         priority_keywords = [
-            "gemini-2.0-flash",
-            "gemini-1.5-flash",
+            "gemini-2.5-flash-lite",  # 最優先（旧1.5-flashに相当する軽量・制限制限が緩いモデル）
+            "gemini-2.0-flash-lite",
             "gemini-2.5-flash",
-            "gemini-1.5-pro"
+            "gemini-2.0-flash"
         ]
         
         candidates = []
@@ -47,10 +47,10 @@ def get_available_candidate_models():
             if "gemini" in name and name not in candidates:
                 candidates.append(name)
                 
-        return candidates if candidates else ["gemini-2.0-flash", "gemini-2.5-flash"]
+        return candidates if candidates else ["gemini-2.5-flash-lite", "gemini-2.5-flash"]
     except Exception:
-        # 万が一モデル一覧取得に失敗した場合は標準モデルを設定
-        return ["gemini-2.0-flash", "gemini-2.5-flash"]
+        # 万が一モデル一覧取得に失敗した場合は軽量モデルを標準設定
+        return ["gemini-2.5-flash-lite", "gemini-2.5-flash"]
 
 candidate_models = get_available_candidate_models()
 
