@@ -20,16 +20,43 @@ if not api_key:
 
 client = genai.Client(api_key=api_key)
 
-# --- 2. 使用モデルの設定（1.5-flash最優先＆自動フォールバック） ---
-candidate_models = [
-    "gemini-1.5-flash",  # 無料枠が大きいモデルを最優先（1日1,500回までOK）
-    "gemini-2.0-flash",  # 予備1
-    "gemini-2.5-flash"   # 予備2
-]
+# --- 2. 利用可能なモデルの自動検出 ＆ 優先順位リスト作成 ---
+@st.cache_resource
+def get_available_candidate_models():
+    try:
+        # APIから実際に利用可能なモデル一覧を取得
+        models_list = list(client.models.list())
+        available_names = [m.name.replace("models/", "") for m in models_list]
+        
+        # 優先したいモデル順
+        priority_keywords = [
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-2.5-flash",
+            "gemini-1.5-pro"
+        ]
+        
+        candidates = []
+        for kw in priority_keywords:
+            for name in available_names:
+                if kw in name and name not in candidates:
+                    candidates.append(name)
+        
+        # リストになかったモデルも予備として追加
+        for name in available_names:
+            if "gemini" in name and name not in candidates:
+                candidates.append(name)
+                
+        return candidates if candidates else ["gemini-2.0-flash", "gemini-2.5-flash"]
+    except Exception:
+        # 万が一モデル一覧取得に失敗した場合は標準モデルを設定
+        return ["gemini-2.0-flash", "gemini-2.5-flash"]
 
-# サイドバーに設定情報を表示
+candidate_models = get_available_candidate_models()
+
+# サイドバーに自動検出された候補モデルを表示
 st.sidebar.title("⚙️ 設定情報")
-st.sidebar.info(f"🤖 優先使用モデル: `{candidate_models[0]}`")
+st.sidebar.info(f"🤖 使用候補モデル順:\n" + "\n".join([f"- `{m}`" for m in candidate_models[:3]]))
 
 # --- 3. UIの構築 ---
 st.subheader("1. 音読する英文を入力")
@@ -78,7 +105,7 @@ if st.button("🚀 音読を判定する", type="primary", use_container_width=T
             audio_file = None
             
             try:
-                # 1. 一時ファイルとして音声データを保存
+                # 一時ファイルとして音声データを保存
                 ext = os.path.splitext(audio_file_name)[1]
                 if not ext:
                     ext = ".wav"
@@ -87,10 +114,10 @@ if st.button("🚀 音読を判定する", type="primary", use_container_width=T
                     tmp_file.write(audio_bytes)
                     tmp_path = tmp_file.name
 
-                # 2. Geminiへ音声ファイルをアップロード
+                # Geminiへ音声ファイルをアップロード
                 audio_file = client.files.upload(file=tmp_path)
 
-                # 3. 評価プロンプト
+                # 評価プロンプト
                 prompt = f"""
 あなたは中学校の親しみやすい熱血英語コーチであり、発音矯正のプロフェッショナルである「Gemini先生」です。
 生徒が以下の【読んだ英文】を音読しました。
@@ -154,7 +181,7 @@ if st.button("🚀 音読を判定する", type="primary", use_container_width=T
                 used_model = None
                 last_error = None
 
-                # 4. gemini-1.5-flash から順番に試行（429エラー発生時のみ次のモデルにフォールバック）
+                # 404（未存在）や429（上限オーバー）でも止まらず次の有効モデルを自動試行
                 for model_name in candidate_models:
                     try:
                         response = client.models.generate_content(
@@ -163,24 +190,21 @@ if st.button("🚀 音読を判定する", type="primary", use_container_width=T
                         )
                         used_model = model_name
                         break  # 成功したらループを抜ける
-                    except ClientError as e:
-                        if e.code == 429:
-                            last_error = e
-                            continue  # 上限エラーなら次のモデルを試す
-                        raise e
+                    except Exception as e:
+                        last_error = e
+                        continue  # エラー発生時は次の候補モデルを試す
 
-                # 5. 結果表示
                 if response:
                     st.success(f"添削が完了しました！（使用モデル: `{used_model}`）")
                     st.markdown(response.text)
                 else:
-                    st.error(f"すべてのモデルの上限（無料枠）に達しました: {last_error}")
+                    st.error(f"利用可能なモデルの呼び出しに失敗しました: {last_error}")
 
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
             
             finally:
-                # 6. 一時ファイルとサーバー上データのクリーンアップ
+                # 一時ファイルとサーバー上データのクリーンアップ
                 if audio_file:
                     try:
                         client.files.delete(name=audio_file.name)
