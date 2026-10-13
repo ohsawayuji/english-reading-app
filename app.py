@@ -10,14 +10,12 @@ st.title("🎤 英語音読・発音判定アプリ")
 st.caption("即興で読んだ英文や、課題の英文を入力して音読を録音・アップロードしてみよう！")
 
 # --- 1. APIキーの読み込み ---
-# Streamlit SecretsからAPIキーを取得
 api_key = st.secrets.get("GEMINI_API_KEY")
 
 if not api_key:
     st.error("APIキーが設定されていません。StreamlitのSecretsに「GEMINI_API_KEY」を設定してください。")
     st.stop()
 
-# クライアント初期化
 client = genai.Client(api_key=api_key)
 
 # --- 2. モデルの自動選択 ---
@@ -89,7 +87,7 @@ if st.button("🚀 音読を判定する", type="primary", use_container_width=T
                 # Geminiへアップロード
                 audio_file = client.files.upload(file=tmp_path)
 
-prompt = f"""
+                prompt = f"""
 あなたは中学校の親しみやすい熱血英語コーチであり、発音矯正のプロフェッショナルである「Gemini先生」です。
 生徒が以下の【読んだ英文】を音読しました。
 添付された音声ファイルを聴き、**「ネイティブに正しく伝わるか」という厳しい基準**で評価しつつ、**生徒のやる気を引き出す温かい指導**を行ってください。
