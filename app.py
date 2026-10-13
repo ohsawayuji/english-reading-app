@@ -18,19 +18,32 @@ if not api_key:
 
 client = genai.Client(api_key=api_key)
 
-# --- 2. モデルの自動選択 ---
-@st.cache_resource
+# --- 2. モデルの自動選択（判定ログ表示付き） ---
 def get_target_model():
-    available_models = [m.name for m in client.models.list()]
-    model_names = [m.replace("models/", "") for m in available_models]
-    
-    # 1.5-flashを最優先にしてリクエスト上限（429エラー）を回避
-    for priority_model in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
-        if priority_model in model_names:
-            return priority_model
-    return model_names[0]
+    try:
+        available_models = [m.name for m in client.models.list()]
+        model_names = [m.replace("models/", "") for m in available_models]
+        
+        # 1.5-flash 系のモデル名を柔軟に検索
+        for m in model_names:
+            if "gemini-1.5-flash" in m:
+                return m
+        
+        # 見つからない場合の優先順位
+        for priority in ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-2.5-flash"]:
+            for m in model_names:
+                if priority in m:
+                    return m
+                    
+        return model_names[0]
+    except Exception:
+        # 万が一モデル一覧が取得できない場合の直接指定フォールバック
+        return "gemini-1.5-flash"
 
 target_model = get_target_model()
+
+# サイドバーに現在使用中のモデル名を明示（確認用）
+st.sidebar.info(f"🤖 現在使用中のモデル: `{target_model}`")
 
 # --- 3. UIの構築 ---
 st.subheader("1. 音読する英文を入力")
