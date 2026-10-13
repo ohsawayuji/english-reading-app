@@ -24,7 +24,8 @@ def get_target_model():
     available_models = [m.name for m in client.models.list()]
     model_names = [m.replace("models/", "") for m in available_models]
     
-    for priority_model in ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]:
+    # 1.5-flashを最優先にしてリクエスト上限（429エラー）を回避
+    for priority_model in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
         if priority_model in model_names:
             return priority_model
     return model_names[0]
