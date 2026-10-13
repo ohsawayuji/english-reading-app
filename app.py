@@ -2,8 +2,10 @@ import os
 import tempfile
 import streamlit as st
 from google import genai
+from google.genai.errors import ClientError
 from streamlit_mic_recorder import mic_recorder
 
+# --- ページ基本設定 ---
 st.set_page_config(page_title="英語音読・発音判定AI", page_icon="🎤")
 
 st.title("🎤 英語音読・発音判定アプリ")
@@ -18,32 +20,16 @@ if not api_key:
 
 client = genai.Client(api_key=api_key)
 
-# --- 2. モデルの自動選択（判定ログ表示付き） ---
-def get_target_model():
-    try:
-        available_models = [m.name for m in client.models.list()]
-        model_names = [m.replace("models/", "") for m in available_models]
-        
-        # 1.5-flash 系のモデル名を柔軟に検索
-        for m in model_names:
-            if "gemini-1.5-flash" in m:
-                return m
-        
-        # 見つからない場合の優先順位
-        for priority in ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-2.5-flash"]:
-            for m in model_names:
-                if priority in m:
-                    return m
-                    
-        return model_names[0]
-    except Exception:
-        # 万が一モデル一覧が取得できない場合の直接指定フォールバック
-        return "gemini-1.5-flash"
+# --- 2. 使用モデルの設定（1.5-flash最優先＆自動フォールバック） ---
+candidate_models = [
+    "gemini-1.5-flash",  # 無料枠が大きいモデルを最優先（1日1,500回までOK）
+    "gemini-2.0-flash",  # 予備1
+    "gemini-2.5-flash"   # 予備2
+]
 
-target_model = get_target_model()
-
-# サイドバーに現在使用中のモデル名を明示（確認用）
-st.sidebar.info(f"🤖 現在使用中のモデル: `{target_model}`")
+# サイドバーに設定情報を表示
+st.sidebar.title("⚙️ 設定情報")
+st.sidebar.info(f"🤖 優先使用モデル: `{candidate_models[0]}`")
 
 # --- 3. UIの構築 ---
 st.subheader("1. 音読する英文を入力")
@@ -72,7 +58,7 @@ with tab1:
         st.success("録音が完了しました！")
 
 with tab2:
-    uploaded_file = st.file_uploader("録音データ（.mp3, .wav, .m4aなど）を選択", type=["mp3", "wav", "m4a"])
+    uploaded_file = st.file_uploader("録音データ（.mp3, .wav, .m4a, .webm など）を選択", type=["mp3", "wav", "m4a", "webm", "ogg"])
     if uploaded_file is not None:
         audio_bytes = uploaded_file.read()
         audio_file_name = uploaded_file.name
@@ -88,8 +74,11 @@ if st.button("🚀 音読を判定する", type="primary", use_container_width=T
         st.warning("音声データを録音するか、ファイルをアップロードしてください。")
     else:
         with st.spinner("🤖 Geminiが音声を聞いて添削中... 数秒お待ちください"):
+            tmp_path = None
+            audio_file = None
+            
             try:
-                # 一時ファイルとして音声データを保存
+                # 1. 一時ファイルとして音声データを保存
                 ext = os.path.splitext(audio_file_name)[1]
                 if not ext:
                     ext = ".wav"
@@ -98,9 +87,10 @@ if st.button("🚀 音読を判定する", type="primary", use_container_width=T
                     tmp_file.write(audio_bytes)
                     tmp_path = tmp_file.name
 
-                # Geminiへアップロード
+                # 2. Geminiへ音声ファイルをアップロード
                 audio_file = client.files.upload(file=tmp_path)
 
+                # 3. 評価プロンプト
                 prompt = f"""
 あなたは中学校の親しみやすい熱血英語コーチであり、発音矯正のプロフェッショナルである「Gemini先生」です。
 生徒が以下の【読んだ英文】を音読しました。
@@ -121,7 +111,7 @@ if st.button("🚀 音読を判定する", type="primary", use_container_width=T
    - 子音の後の無駄な母音（uやoなど）の足し込み（例: "like" → "ライク"）
    - `th`（サ/シ）、`f/v`（ハ/バ）、`r/l`（ラ）の代用
    - 日本語特有の「平坦で一本調子な音調」や「単語ごとのブツ切り（リンキング欠如）」
-   ※ただし、**ネイティブ特有の滑らかな音の変化や息の抜け方を「無駄な母音」や「崩れ」と誤判定して減点しないよう注意**してください。
+   ※ただし、**ネイティブ特有の滑らかな音の変化や息の抜け方を「無駄な母音」や「崩れ」と誤判定しないよう注意**してください。
 
 3. **指導のトーン・マインド**:
    - 採点基準はブレずに適用しますが、言葉遣いは絶対に冷たくせず、**「まず良かったところを具体的に1つ褒める」**こと。
@@ -160,17 +150,41 @@ if st.button("🚀 音読を判定する", type="primary", use_container_width=T
 (点数に応じたアドバイスと、「ここを直せばもっとカッコよくなるよ！」「この調子で頑張ろう！」と次に向けて前向きになれるメッセージ)
 """
 
-                response = client.models.generate_content(
-                    model=target_model,
-                    contents=[audio_file, prompt]
-                )
+                response = None
+                used_model = None
+                last_error = None
 
-                # クリーンアップ
-                client.files.delete(name=audio_file.name)
-                os.remove(tmp_path)
+                # 4. gemini-1.5-flash から順番に試行（429エラー発生時のみ次のモデルにフォールバック）
+                for model_name in candidate_models:
+                    try:
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=[audio_file, prompt]
+                        )
+                        used_model = model_name
+                        break  # 成功したらループを抜ける
+                    except ClientError as e:
+                        if e.code == 429:
+                            last_error = e
+                            continue  # 上限エラーなら次のモデルを試す
+                        raise e
 
-                st.success("添削が完了しました！")
-                st.markdown(response.text)
+                # 5. 結果表示
+                if response:
+                    st.success(f"添削が完了しました！（使用モデル: `{used_model}`）")
+                    st.markdown(response.text)
+                else:
+                    st.error(f"すべてのモデルの上限（無料枠）に達しました: {last_error}")
 
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
+            
+            finally:
+                # 6. 一時ファイルとサーバー上データのクリーンアップ
+                if audio_file:
+                    try:
+                        client.files.delete(name=audio_file.name)
+                    except Exception:
+                        pass
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
